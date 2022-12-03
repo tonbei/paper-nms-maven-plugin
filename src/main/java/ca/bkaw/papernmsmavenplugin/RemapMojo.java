@@ -3,6 +3,7 @@ package ca.bkaw.papernmsmavenplugin;
 import net.fabricmc.tinyremapper.IMappingProvider;
 import net.fabricmc.tinyremapper.TinyRemapper;
 import net.fabricmc.tinyremapper.TinyUtils;
+import net.fabricmc.tinyremapper.extension.mixin.MixinExtension;
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.resolver.ArtifactNotFoundException;
 import org.apache.maven.artifact.resolver.ArtifactResolutionException;
@@ -31,6 +32,7 @@ public class RemapMojo extends MojoBase {
         String gameVersion = this.getGameVersion();
         Path cacheDirectory = this.getCacheDirectory();
         Path mappingsPath = cacheDirectory.resolve("mappings_" + gameVersion + ".tiny");
+//        Path mappingsPath = cacheDirectory.resolve("mappings" + ".tiny");
 
         Path mappingsMojangPath = cacheDirectory.resolve("mappings_" + gameVersion + "_mojang.tiny");
         Path mappingsSpigotPath = cacheDirectory.resolve("mappings_" + gameVersion + "_spigot.tiny");
@@ -77,6 +79,7 @@ public class RemapMojo extends MojoBase {
         }
 
         boolean hasMojangMappings = Files.exists(mappingsMojangPath);
+//        boolean hasMojangMappings = false;
 
         if (!hasMojangMappings) {
             try {
@@ -155,6 +158,7 @@ public class RemapMojo extends MojoBase {
         TinyRemapper remapper = TinyRemapper.newRemapper()
             .withMappings(mappings)
             .ignoreConflicts(true)
+            .extension(new MixinExtension())
             .build();
 
         // Add the class path

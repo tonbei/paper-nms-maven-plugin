@@ -23,9 +23,23 @@ import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 import org.apache.maven.project.artifact.ProjectArtifactMetadata;
+import org.cadixdev.bombe.type.FieldType;
+import org.cadixdev.bombe.type.MethodDescriptor;
+import org.cadixdev.bombe.type.signature.FieldSignature;
+import org.cadixdev.bombe.type.signature.MethodSignature;
 import org.cadixdev.lorenz.MappingSet;
 import org.cadixdev.lorenz.io.MappingFormats;
 import org.cadixdev.lorenz.io.proguard.ProGuardReader;
+import org.cadixdev.lorenz.merge.MappingSetMerger;
+import org.cadixdev.lorenz.merge.MappingSetMergerHandler;
+import org.cadixdev.lorenz.merge.MergeConfig;
+import org.cadixdev.lorenz.merge.MergeContext;
+import org.cadixdev.lorenz.merge.MergeResult;
+import org.cadixdev.lorenz.model.ClassMapping;
+import org.cadixdev.lorenz.model.FieldMapping;
+import org.cadixdev.lorenz.model.InnerClassMapping;
+import org.cadixdev.lorenz.model.MethodMapping;
+import org.cadixdev.lorenz.model.TopLevelClassMapping;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -254,17 +268,64 @@ public abstract class MojoBase extends AbstractMojo {
             throw new MojoExecutionException("Failed to create .paper-nms cache folder.", e);
         }
 
+        Path reobfSrgPath = cacheDirectory.resolve("mappings_" + gameVersion + ".srg");
         Path mappingsPath = cacheDirectory.resolve("mappings_" + gameVersion + ".tiny");
         Path mappedPaperPath = cacheDirectory.resolve("mapped_paper_"+ gameVersion +".jar");
         List<String> dependencyCoordinates = new ArrayList<>();
 
         getLog().info("Downloading dev-bundle");
         Path devBundlePath = this.resolveDevBundle(gameVersion);
+//        Path devBundlePath = null;
 
         if (devBundlePath != null) {
             getLog().info("Extracting dev-bundle");
             Path paperclipPath = cacheDirectory.resolve("paperclip.jar");
             this.extractDevBundle(paperclipPath, mappingsPath, devBundlePath, dependencyCoordinates);
+
+            Path mappingsTempPath = cacheDirectory.resolve("mappings_" + gameVersion + "-temp.tiny");
+
+            Path mappingsMojangPath = cacheDirectory.resolve("mappings_" + gameVersion + "_mojang.tiny");
+            Path mappingsSpigotPath = cacheDirectory.resolve("mappings_" + gameVersion + "_spigot.tiny");
+
+            Path mojangMappingsPath = cacheDirectory.resolve("mojang_mappings.txt");
+            this.downloadMojangMappings(mojangMappingsPath, gameVersion);
+
+            getLog().info("Downloading spigot mappings");
+            Path spigotClassMappingsPath = cacheDirectory.resolve("spigot_class_mappings_"+ gameVersion +".csrg");
+            Path spigotMemberMappingsPath = cacheDirectory.resolve("spigot_member_mappings_"+ gameVersion +".csrg");
+            this.downloadSpigotMappings(spigotClassMappingsPath, spigotMemberMappingsPath, gameVersion);
+
+            getLog().info("Merging mappings");
+            this.mergeMappings(spigotClassMappingsPath, spigotMemberMappingsPath, mojangMappingsPath, mappingsTempPath, mappingsMojangPath, mappingsSpigotPath);
+
+            try {
+                MappingSet tempMappings = TinyMappingFormat.TINY_2.read(mappingsTempPath, "spigot", "mojang");
+                MappingSet mappings = TinyMappingFormat.TINY_2.read(mappingsPath, "mojang+yarn", "spigot");
+
+                MappingSet merged = MappingSetMerger.create(tempMappings.reverse(), mappings, MergeConfig.builder().withMergeHandler(new MappingSetMergerHandler() {
+                    @Override
+                    public FieldMapping addLeftFieldMapping(FieldMapping left, ClassMapping<?, ?> target, MergeContext context) {
+                        return target.createFieldMapping(new FieldSignature(left.getObfuscatedName(), left.getType().orElse(null)), left.getDeobfuscatedName());
+                    }
+                    @Override
+                    public FieldMapping addRightFieldMapping(FieldMapping right, ClassMapping<?, ?> target, MergeContext context) {
+//                        FieldType obfuscatedType = context.getLeftReversed().deobfuscate((FieldType)right.getType().orElse((Object)null));
+                        return target.createFieldMapping(new FieldSignature(right.getObfuscatedName(), right.getType().orElse(null)), right.getDeobfuscatedName());
+                    }
+                    @Override
+                    public MergeResult<MethodMapping> addRightMethodMapping(MethodMapping right, ClassMapping<?, ?> target, MergeContext context) {
+//                        MethodDescriptor obfuscatedDescriptor = context.getLeftReversed().deobfuscate(right.getDescriptor());
+                        return new MergeResult(target.createMethodMapping(right.getSignature(), right.getDeobfuscatedName()), right);
+                    }
+                }).build()).merge();
+
+                MappingFormats.SRG.write(merged, reobfSrgPath);
+                TinyMappingFormat.TINY_2.write(merged, cacheDirectory.resolve("map.tiny"), "mojang+yarn", "spigot");
+//                TinyMappingFormat.TINY_2.write(merged.reverse(), cacheDirectory.resolve("map.tiny"), "mojang+yarn", "spigot");
+//                MappingFormats.SRG.write(tempMappings.reverse(), cacheDirectory.resolve("map.srg"));
+            } catch (IOException e) {
+                throw new MojoExecutionException("Failed to write reobf mappings", e);
+            }
 
             getLog().info("Extracting paper");
             this.extractPaperJar(gameVersion, cacheDirectory, mappedPaperPath);
@@ -531,6 +592,8 @@ public abstract class MojoBase extends AbstractMojo {
         this.fixMappings(mappings);
 
         try {
+            MappingFormats.SRG.write(mappings.reverse(), this.getCacheDirectory().resolve("mappings.srg"));
+            TinyMappingFormat.TINY_2.write(mappings.reverse(), this.getCacheDirectory().resolve("mappings.tiny"), "mojang", "spigot");
             TinyMappingFormat.TINY_2.write(mappings, outputPath, "spigot", "mojang");
             TinyMappingFormat.TINY_2.write(mojangMappings, outputMojangPath, "mojang", "obfuscated");
             TinyMappingFormat.TINY_2.write(spigotMappings, outputSpigotPath, "obfuscated", "spigot");
@@ -826,7 +889,7 @@ public abstract class MojoBase extends AbstractMojo {
         getLog().info("Cleaning up paper jar");
         try {
             Files.delete(paperPath);
-            Files.delete(mappingsPath);
+//            Files.delete(mappingsPath);
         } catch (IOException e) {
             throw new MojoExecutionException("Failed to delete paper jar", e);
         }
